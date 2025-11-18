@@ -1,0 +1,165 @@
+services:
+  qa-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=password
+      - DB_NAME=qa_service
+      - DB_SSLMODE=disable
+      - PORT=8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - qa-network
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=qa_service
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - qa-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d qa_service"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  postgres-test:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=qa_service_test
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_test_data:/var/lib/postgresql/data
+    networks:
+      - qa-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d qa_service_test"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - test
+
+  migrator:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: ["./migrate.sh"]
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=password
+      - DB_NAME=qa_service
+      - DB_SSLMODE=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - qa-network
+    profiles:
+      - tools
+
+  migration-status:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: ["sh", "-c", "goose -dir ./migrations postgres 'postgres://postgres:password@postgres:5432/qa_service?sslmode=disable' status"]
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=password
+      - DB_NAME=qa_service
+      - DB_SSLMODE=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - qa-network
+    profiles:
+      - tools
+
+  migration-reset:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: ["sh", "-c", "echo 'WARNING: This will reset all migrations!' && goose -dir ./migrations postgres 'postgres://postgres:password@postgres:5432/qa_service?sslmode=disable' reset"]
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=password
+      - DB_NAME=qa_service
+      - DB_SSLMODE=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - qa-network
+    profiles:
+      - tools
+
+  migrator-test:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.test
+    command: ["./scripts/migrate.sh"]
+    environment:
+      - DB_HOST=postgres-test
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=password
+      - DB_NAME=qa_service_test
+      - DB_SSLMODE=disable
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+    networks:
+      - qa-network
+    profiles:
+      - test
+
+  tester:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.test
+    command: ["go", "test", "./tests/...", "-v"]
+    environment:
+      - TEST_DATABASE_URL=postgres://postgres:password@postgres-test:5432/qa_service_test?sslmode=disable
+    depends_on:
+      migrator-test:
+        condition: service_completed_successfully
+    networks:
+      - qa-network
+    profiles:
+      - test
+    volumes:
+      - ./test-results:/app/test-results
+
+volumes:
+  postgres_data:
+  postgres_test_data:
+
+networks:
+  qa-network:
+    driver: bridge
